@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ↓↓↓ 把這裡改成你的 Google 帳號（可以放多個，例如老師的帳號）↓↓↓
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email in ['請改成你的信箱@gmail.com'];
+    }
+
+    // 哪些座號填過：任何人都能查單一座號，只能新增、不能修改或刪除
+    match /submitted_v1/{seat} {
+      allow get: if true;
+      allow list: if isAdmin();
+      allow create: if seat.matches('^[0-9]{1,2}$')
+        && request.resource.data.keys().hasOnly(['time']);
+      allow update, delete: if false;
+    }
+
+    // 完整回饋：只有管理員能看；同一個座號只能送出一次
+    match /responses_v1/{seat} {
+      allow read: if isAdmin();
+      allow create: if seat.matches('^[0-9]{1,2}$')
+        && request.resource.data.seat == int(seat)
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 10
+        && request.resource.data.answers is map;
+      allow update, delete: if false;
+    }
+  }
+}

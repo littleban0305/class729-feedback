@@ -1,6 +1,6 @@
 // =====================================================
-// 729 蓋章政策回饋 v0.8（測試版）
-// 測試版：回饋只存在這台裝置的瀏覽器裡，正式版再接後台
+// 729 蓋章政策回饋 v1.0
+// 回饋存在 Firebase Firestore，設定在 firebase-config.js
 // =====================================================
 
 // ---------------- 題目（要改題目，改這裡就好） ----------------
@@ -63,14 +63,23 @@ const OTHER = '其他';
 let answers = {};
 let who = null;            // {seat, name}
 let lastRecord = null;
-const KEY = 'class729_policy_test_v08';
-const DONE_KEY = 'class729_policy_done_v08';   // 這台裝置填過的紀錄
-let store = [];
-try { store = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { store = []; }
-function saveStore(){ try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {} }
-function deviceDone(){ try { return localStorage.getItem(DONE_KEY); } catch (e) { return null; } }
-function markDeviceDone(time){ try { localStorage.setItem(DONE_KEY, time); } catch (e) {} }
-const findBySeat = seat => store.find(r => r.seat === seat);
+// ---------------- Firebase ----------------
+const SUBMITTED = 'submitted_v1';   // 只記錄哪些座號填過（任何人都能查）
+const RESPONSES = 'responses_v1';   // 完整回饋（只有管理員能看）
+const MY_KEY = 'class729_feedback_mine_v1';   // 這台裝置自己的填寫紀錄
+let db = null, auth = null;
+const configured = window.FIREBASE_CONFIG && !String(window.FIREBASE_CONFIG.apiKey || '').startsWith('請填');
+if (window.firebase && configured){
+  firebase.initializeApp(window.FIREBASE_CONFIG);
+  db = firebase.firestore();
+  auth = firebase.auth();
+}
+function myRecord(){ try { return JSON.parse(localStorage.getItem(MY_KEY) || 'null'); } catch (e) { return null; } }
+function saveMine(rec){ try { localStorage.setItem(MY_KEY, JSON.stringify(rec)); } catch (e) {} }
+async function seatSubmitted(seat){
+  const doc = await db.collection(SUBMITTED).doc(String(seat)).get();
+  return doc.exists;
+}
 
 // ---------------- 小工具 ----------------
 const $ = s => document.querySelector(s);
@@ -129,14 +138,22 @@ function renderStart(){
   const check = () => btn.classList.toggle('dim', !seat.value || !name.value.trim());
   seat.addEventListener('change', () => { err.textContent = ''; check(); });
   name.addEventListener('input', () => { err.textContent = ''; check(); });
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
     if (!seat.value){ err.textContent = '請選擇座號'; return; }
     if (!name.value.trim()){ err.textContent = '請輸入姓名'; return; }
+    if (!db){ err.textContent = '網站還沒有設定好資料庫，請通知負責的同學。'; return; }
     const n = Number(seat.value);
-    if (findBySeat(n)){ err.textContent = `${n} 號已經填寫過了，不能再次填寫。`; return; }
-    who = {seat:n, name:name.value.trim()};
-    answers = {};
-    go(1);
+    btn.textContent = '確認中…'; btn.disabled = true;
+    try {
+      if (await seatSubmitted(n)){ err.textContent = `${n} 號已經填寫過了，不能再次填寫。`; return; }
+      who = {seat:n, name:name.value.trim()};
+      answers = {};
+      go(1);
+    } catch (e) {
+      err.textContent = '連線失敗，請確認網路後再試一次。';
+    } finally {
+      btn.textContent = '開始填寫'; btn.disabled = false;
+    }
   });
   check();
   app.append(h('div', {class:'start'},
@@ -149,7 +166,7 @@ function renderStart(){
 
 function renderAlready(){
   setColor('var(--p1)');
-  const rec = store.find(r => r.time === deviceDone()) || store[store.length - 1];
+  const rec = myRecord();
   lastRecord = rec || null;
   app.append(h('div', {class:'result'},
     h('div', {class:'thanks-card'},
@@ -255,13 +272,28 @@ function textItem(item, part){
 }
 
 // ---------------- 送出 ----------------
-function submit(){
-  if (findBySeat(who.seat)){ toast(`${who.seat} 號已經填寫過了`); return go('already'); }
-  lastRecord = {time:new Date().toISOString(), seat:who.seat, name:who.name, answers:structuredClone(answers)};
-  store.push(lastRecord);
-  saveStore();
-  markDeviceDone(lastRecord.time);
-  go('thanks');
+let sending = false;
+async function submit(){
+  if (sending) return;
+  sending = true;
+  toast('送出中…');
+  const rec = {seat:who.seat, name:who.name, answers:structuredClone(answers)};
+  try {
+    const batch = db.batch();
+    const time = firebase.firestore.FieldValue.serverTimestamp();
+    batch.set(db.collection(SUBMITTED).doc(String(who.seat)), {time});
+    batch.set(db.collection(RESPONSES).doc(String(who.seat)), {...rec, time});
+    await batch.commit();
+    lastRecord = {...rec, time:new Date().toISOString()};
+    saveMine(lastRecord);
+    go('thanks');
+  } catch (e) {
+    // 被資料庫規則擋下來，代表這個座號已經有人送出過
+    if (e && e.code === 'permission-denied'){ toast(`${who.seat} 號已經填寫過了`); go('start'); }
+    else toast('送出失敗，請確認網路後再按一次送出');
+  } finally {
+    sending = false;
+  }
 }
 
 // ---------------- 感謝頁 ----------------
@@ -271,7 +303,6 @@ function renderThanks(){
     h('div', {class:'thanks-card'},
       h('h2', {}, '感謝你的填寫'),
       h('p', {}, '你的回饋已經送出，會作為之後調整政策的參考。'),
-      h('p', {class:'note'}, '測試版：回饋只存在這台裝置，還沒有傳到後台。'),
       h('div', {class:'btn-row'},
         h('button', {class:'btn', onclick:() => go('mine')}, '查看我的填寫結果')))));
 }
@@ -279,6 +310,7 @@ function renderThanks(){
 // ---------------- 我的填寫結果 ----------------
 function renderMine(){
   setColor('var(--p1)');
+  lastRecord = lastRecord || myRecord();
   const ans = lastRecord ? lastRecord.answers : answers;
   const box = h('div', {class:'result'}, h('h2', {class:'page-title'}, '我的填寫結果'),
     lastRecord ? h('p', {class:'note', style:'margin:-8px 0 16px'}, `${lastRecord.seat} 號 ${lastRecord.name}`) : null);
@@ -301,30 +333,50 @@ function renderMine(){
     }
     box.append(card);
   }
-  box.append(h('div', {class:'btn-row'}, h('button', {class:'btn ghost', onclick:() => go(deviceDone() ? 'already' : 'start')}, '返回')));
+  box.append(h('div', {class:'btn-row'}, h('button', {class:'btn ghost', onclick:() => go(myRecord() ? 'already' : 'start')}, '返回')));
   app.append(box);
 }
 
-// ---------------- 統計頁（測試用） ----------------
-function renderAdmin(){
+// ---------------- 統計頁（管理員） ----------------
+async function renderAdmin(){
   setColor('var(--p1)');
-  const box = h('div', {class:'admin'}, h('h2', {}, '統計（測試用）'), h('p', {class:'note'}, '只會看到在這台裝置填過的回饋。'));
+  const box = h('div', {class:'admin'}, h('h2', {}, '統計'));
   app.append(box);
-  const back = h('button', {class:'btn ghost', style:'margin-top:16px', onclick:() => go(deviceDone() ? 'already' : 'start')}, '回到問卷');
-  // 清除測試資料（按兩次才會清除）
-  const clear = h('button', {class:'btn ghost', style:'margin-top:16px'}, '清除測試資料');
-  clear.addEventListener('click', () => {
-    if (!clear.dataset.armed){ clear.dataset.armed = '1'; clear.textContent = '再按一次確認清除'; return; }
-    store = []; saveStore(); try { localStorage.removeItem(DONE_KEY); } catch (e) {}
-    who = null; answers = {}; lastRecord = null; toast('已清除'); go('admin');
-  });
+  const back = h('button', {class:'btn ghost', onclick:() => go(myRecord() ? 'already' : 'start')}, '回到問卷');
+  if (!db){ box.append(h('div', {class:'empty'}, '還沒有設定 Firebase，請先填寫 firebase-config.js。'), h('div', {class:'btn-row', style:'justify-content:flex-start'}, back)); return; }
+
+  // 等 Firebase 讀完登入狀態，避免重新整理後被當成未登入
+  const user = await new Promise(res => { const off = auth.onAuthStateChanged(u => { off(); res(u); }); });
+  if (!user){
+    const err = h('div', {class:'err'});
+    const login = h('button', {class:'btn'}, '用 Google 帳號登入');
+    login.addEventListener('click', async () => {
+      try { await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); go('admin'); }
+      catch (e) { err.textContent = '登入失敗：' + (e.message || e.code); }
+    });
+    box.append(h('p', {class:'note'}, '只有管理員可以查看統計。'), h('div', {class:'btn-row', style:'justify-content:flex-start'}, login, back), err);
+    return;
+  }
+
+  let store = [];
+  try {
+    const snap = await db.collection(RESPONSES).get();
+    store = snap.docs.map(d => d.data()).sort((a, b) => a.seat - b.seat);
+  } catch (e) {
+    const logout = h('button', {class:'btn ghost', onclick: async () => { await auth.signOut(); go('admin'); }}, '登出');
+    box.append(h('div', {class:'empty'}, `${user.email} 沒有查看權限。`), h('div', {class:'btn-row', style:'justify-content:flex-start'}, logout, back));
+    return;
+  }
+  box.append(h('p', {class:'note'}, `已登入：${user.email}`));
+  const logout = h('button', {class:'btn ghost', onclick: async () => { await auth.signOut(); go('admin'); }}, '登出');
+
   // 填寫名單
   const filled = new Map(store.map(r => [r.seat, r.name]));
   const roster = h('div', {class:'roster'}, ...SEATS.map(n => h('span', {class:'seat' + (filled.has(n) ? ' on' : ''), title: filled.get(n) || '未填'}, String(n))));
   box.append(h('div', {class:'res-card'}, h('h3', {}, `填寫名單（${filled.size} / ${SEATS.length}）`), roster,
-    h('p', {class:'note'}, '有顏色的座號代表已經填寫。')));
+    h('p', {class:'note'}, '有顏色的座號代表已經填寫，滑鼠移上去可以看到姓名。')));
   const n = store.length;
-  if (!n){ box.append(h('div', {class:'empty'}, '還沒有回饋。'), back); return; }
+  if (!n){ box.append(h('div', {class:'empty'}, '還沒有回饋。'), h('div', {class:'btn-row', style:'justify-content:flex-start'}, back, logout)); return; }
   const all = store.map(r => r.answers);
   const rateAvg = part => avg(all.flatMap(a => part.items.filter(i => i.type === 'rate').map(i => a[i.id]).filter(Boolean)));
   box.append(h('div', {class:'kpi'},
@@ -357,8 +409,8 @@ function renderAdmin(){
   }
   box.append(h('div', {class:'btn-row', style:'justify-content:flex-start'},
     h('button', {class:'btn', onclick: async () => { try { await navigator.clipboard.writeText(JSON.stringify(store, null, 2)); toast('已複製'); } catch (e) { toast('複製失敗'); } }}, '複製全部資料'),
-    back, clear));
+    back, logout));
 }
 
 // ---------------- 開始 ----------------
-go(deviceDone() ? 'already' : 'start');
+go(myRecord() ? 'already' : 'start');
