@@ -4,10 +4,10 @@
 // 把「firebaseConfig」裡的內容，貼到下面對應的位置
 // =====================================================
 window.FIREBASE_CONFIG = {
-  apiKey: "請填入 apiKey",
-  authDomain: "請填入 authDomain",
-  projectId: "請填入 projectId",
-  storageBucket: "請填入 storageBucket",
-  messagingSenderId: "請填入 messagingSenderId",
-  appId: "請填入 appId"
+  apiKey: "AIzaSyADMOK6ZuVLtTKGXrNMBJ4LhmgIiJD9Qgc",
+  authDomain: "class729-36c44.firebaseapp.com",
+  projectId: "class729-36c44",
+  storageBucket: "class729-36c44.firebasestorage.app",
+  messagingSenderId: "123161480571",
+  appId: "1:123161480571:web:f7aed00e3c7d42870901de",
 };
